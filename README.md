@@ -117,9 +117,10 @@ jobs:
   release:
     permissions:
       contents: write
-    # xr-release-workflows v2.0.0 candidate
+    # Replace both occurrences with the same reviewed immutable workflow commit.
     uses: xr-esp-private/xr-release-workflows/.github/workflows/linux-deb-release.yml@0123456789abcdef0123456789abcdef01234567
     with:
+      workflow_implementation_commit: 0123456789abcdef0123456789abcdef01234567
       source_repository: xr-esp-private/example-private-source
       source_tag: ${{ inputs.source_tag }}
       source_commit: ${{ inputs.source_commit }}
@@ -172,9 +173,10 @@ permissions:
 
 jobs:
   validate:
-    # xr-release-workflows v2.0.0 candidate
+    # Replace both occurrences with the same reviewed immutable workflow commit.
     uses: xr-esp-private/xr-release-workflows/.github/workflows/linux-deb-validate.yml@0123456789abcdef0123456789abcdef01234567
     with:
+      workflow_implementation_commit: 0123456789abcdef0123456789abcdef01234567
       source_repository: xr-esp-private/example-private-source
       source_tag: ${{ inputs.source_tag }}
       source_commit: ${{ inputs.source_commit }}

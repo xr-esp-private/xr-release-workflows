@@ -81,6 +81,11 @@ set before publication access is available. Product build containers run on
 GitHub-hosted amd64/arm64 runners; developers must not start local Docker on a
 Mac to reproduce those product builds.
 
+Reusable callers must pass the same reviewed full commit in both the job
+`uses` reference and `workflow_implementation_commit`. The explicit input is
+needed because `github.workflow_sha` belongs to the caller workflow during a
+reusable-workflow run and therefore cannot identify this repository's scripts.
+
 ## Reporting and response
 
 Report a suspected vulnerability privately to an Organization owner. Do not

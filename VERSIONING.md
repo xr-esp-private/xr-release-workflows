@@ -28,6 +28,11 @@ Release callers must use the full commit SHA corresponding to an accepted
 version. Floating branches and movable major tags are not production execution
 references. A nearby comment may record the matching SemVer release.
 
+The caller must pass that same SHA as `workflow_implementation_commit`; the
+called workflow validates the input before checking out its implementation
+scripts. `github.workflow_sha` is the caller workflow SHA in this context and
+must not be used to locate reusable-workflow implementation files.
+
 Third-party GitHub Actions in this repository are also pinned to full commit
 SHAs. Updates are reviewed as ordinary commits and must pass the credential-free
 contract suite before callers adopt the new workflow SHA.
