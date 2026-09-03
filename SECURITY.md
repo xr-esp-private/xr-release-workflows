@@ -15,26 +15,71 @@ jobs do not receive APT credentials or a repository-write `GITHUB_TOKEN`.
 - The source-dispatch credential belongs to the private source repository and
   can trigger only its paired public release repository.
 - The source-read credential belongs to the public release repository and has
-  Contents-read access to only its paired private source repository.
+  read access to only its paired private source repository. The preferred first
+  XR Audio Runtime mechanism is a read-only, single-repository Deploy Key stored
+  as `XR_PRIVATE_SOURCE_SSH_KEY`. The compatible token alternative is
+  `XR_PRIVATE_SOURCE_TOKEN`; callers must provide exactly one.
 - Shared APT credentials may be Organization Secrets selected only for public
   release repositories that publish packages.
 - Non-sensitive APT routing data should be selected Organization Variables.
 - The reusable workflow repository has none of these credentials.
 
-Fine-grained, expiring personal access tokens are the short-term mechanism.
-A GitHub App installation token is preferred once app ownership and rotation
-are operationally supported.
+Fine-grained, expiring personal access tokens remain the compatible alternative
+when centralized expiry is required. A GitHub App installation token is
+preferred for future multi-repository automation once app ownership and
+rotation are operationally supported.
+
+A Deploy Key has no automatic expiration. Give it no write access, document its
+owner and planned rotation date without recording the private key, and revoke it
+immediately when the paired repository is retired or the key may be exposed.
+The private key is passed only to the pinned checkout action. With strict host
+checking and `persist-credentials: false`, checkout uses an SSH fetch URL,
+stores the key only in its mode-0600 runner temporary file, and removes its
+authentication configuration after the checkout step.
 
 ## Transport and publication
 
-The APT adapter requires HTTPS and refuses redirects on authenticated uploads.
-Enabling this workflow does not make an existing plaintext upload endpoint
-safe. TLS or a controlled private network and an upload-credential rotation are
-release prerequisites.
+HTTPS is the default APT transport. Plaintext HTTP is accepted only when the
+caller explicitly sets the typed `apt_allow_plain_http` input to `true`; its
+default is `false`. The adapter rejects URL userinfo, non-HTTP(S) schemes,
+suspicious or endpoint-specific base paths, query strings, fragments, and every
+redirect. A redirect therefore cannot receive the Basic Authorization header.
+
+This opt-in records a bounded risk acceptance for the current simple DEB
+product; it does not make plaintext transport safe. HTTP Basic credentials can
+be sniffed or altered in transit. The upload identity must be low privilege,
+restricted to the exact repository/path, and ready for rapid revocation and
+rotation. HTTPS or a controlled private network remains the preferred target.
+
+HTTP APT download authenticity depends on actual `gpgv` verification of
+`InRelease`; there is no confidentiality. The signing key is downloaded without
+redirects only from a GitHub HTTPS raw URL containing a full commit SHA. Its
+sole primary-key fingerprint must exactly match the caller's complete uppercase
+fingerprint. Both are public configuration, not Secrets.
+
+The verified Release payload must cover the exact raw amd64 and arm64
+`Packages` paths. Their downloaded bytes must match both the signed SHA-256 and
+signed length before package records are parsed. Missing coverage, bad
+signature, wrong key, wrong fingerprint, hash mismatch, length mismatch, or an
+unavailable `gpg`/`gpgv` executable fails before upload. A clearsigned text
+header alone is never accepted as evidence.
+
+Never bootstrap first trust by fetching both a setup script and the signing key
+from the same HTTP origin. Keep the public key in the paired public release
+repository, pin its GitHub raw URL to an immutable commit, and independently
+review the full fingerprint. Rotation requires a new reviewed key commit and
+fingerprint; do not silently replace bytes behind an existing URL.
 
 The release remains a GitHub draft until both APT architecture indexes contain
 the exact DEB SHA-256 values. Same package/version with different bytes is an
 incident, not an overwrite operation.
+
+The validation-only reusable workflow has no APT inputs or secrets, no
+repository write permission, and no release or upload step. It is the supported
+way to validate an exact source tag/commit and merged two-architecture package
+set before publication access is available. Product build containers run on
+GitHub-hosted amd64/arm64 runners; developers must not start local Docker on a
+Mac to reproduce those product builds.
 
 ## Reporting and response
 

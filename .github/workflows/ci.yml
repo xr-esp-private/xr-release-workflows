@@ -28,6 +28,11 @@ jobs:
       - name: Validate JSON schema syntax
         run: python3 -m json.tool schema/release-manifest.schema.json >/dev/null
 
+      - name: Require GnuPG verification tools
+        run: |
+          command -v gpg >/dev/null
+          command -v gpgv >/dev/null
+
       - name: Run dependency-free contract tests
         run: python3 -m unittest discover -s tests -v
 

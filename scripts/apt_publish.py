@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict, HTTPS-only APT upload and repository-index verification adapter."""
+"""Strict APT upload and repository-index verification adapter."""
 
 from __future__ import annotations
 
@@ -14,13 +14,14 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from apt_trust import (
+    NoRedirect,
+    bootstrap_signing_key,
+    fetch_verified_index_payloads,
+    validate_signing_key_values,
+)
 from deb_artifacts import DebArtifact, inspect_directory
-from release_contract import ContractError, validate_dispatch_values
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        raise ContractError(f"redirect refused for authenticated request: HTTP {code}")
+from release_contract import ContractError, validate_apt_values
 
 
 @dataclass(frozen=True)
@@ -70,32 +71,33 @@ def parse_packages(text: str) -> list[AptRecord]:
     return records
 
 
-def open_public(url: str, timeout: int) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={"Cache-Control": "no-cache", "User-Agent": "xr-release-workflows/1"},
+def fetch_verified_records(
+    base: str,
+    distribution: str,
+    component: str,
+    architectures: list[str],
+    timeout: int,
+    key_payload: bytes,
+    signing_key_fingerprint: str,
+) -> dict[str, list[AptRecord]]:
+    payloads = fetch_verified_index_payloads(
+        base,
+        distribution,
+        component,
+        architectures,
+        timeout,
+        key_payload,
+        signing_key_fingerprint,
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        if response.status != 200:
-            raise ContractError(f"APT read returned HTTP {response.status}")
-        return response.read()
-
-
-def index_url(base: str, distribution: str, component: str, architecture: str) -> str:
-    quoted = [urllib.parse.quote(value, safe="") for value in (distribution, component, architecture)]
-    return (
-        f"{base.rstrip('/')}/dists/{quoted[0]}/{quoted[1]}/"
-        f"binary-{quoted[2]}/Packages"
-    )
-
-
-def fetch_records(
-    base: str, distribution: str, component: str, architecture: str, timeout: int
-) -> list[AptRecord]:
-    payload = open_public(
-        index_url(base, distribution, component, architecture), timeout
-    )
-    return parse_packages(payload.decode("utf-8"))
+    records: dict[str, list[AptRecord]] = {}
+    for architecture in architectures:
+        try:
+            records[architecture] = parse_packages(
+                payloads[architecture].decode("utf-8")
+            )
+        except UnicodeError as exc:
+            raise ContractError("APT Packages index is not UTF-8") from exc
+    return records
 
 
 def matching_record(
@@ -167,13 +169,19 @@ def indexes_match(
     distribution: str,
     component: str,
     timeout: int,
+    key_payload: bytes,
+    signing_key_fingerprint: str,
 ) -> bool:
-    records_by_architecture = {
-        architecture: fetch_records(
-            base, distribution, component, architecture, timeout
-        )
-        for architecture in sorted({item.architecture for item in artifacts})
-    }
+    architectures = sorted({item.architecture for item in artifacts})
+    records_by_architecture = fetch_verified_records(
+        base,
+        distribution,
+        component,
+        architectures,
+        timeout,
+        key_payload,
+        signing_key_fingerprint,
+    )
     for artifact in artifacts:
         record = matching_record(records_by_architecture[artifact.architecture], artifact)
         if record is None or record.sha256 != artifact.sha256:
@@ -187,6 +195,9 @@ def main() -> int:
     parser.add_argument("--repository-url", required=True)
     parser.add_argument("--distribution", required=True)
     parser.add_argument("--component", required=True)
+    parser.add_argument("--signing-key-url", required=True)
+    parser.add_argument("--signing-key-fingerprint", required=True)
+    parser.add_argument("--allow-plain-http", action="store_true")
     parser.add_argument("--poll-timeout", type=int, default=180)
     parser.add_argument("--request-timeout", type=int, default=30)
     args = parser.parse_args()
@@ -195,33 +206,38 @@ def main() -> int:
         password = os.environ.get("XR_APT_REPO_PASS", "")
         if not username or not password:
             raise ContractError("both APT upload credentials are required")
-        validate_dispatch_values(
-            "xr/placeholder",
-            "v1",
-            "0" * 40,
-            "release.json",
+        validate_apt_values(
             args.repository_url,
             args.distribution,
             args.component,
+            args.allow_plain_http,
+        )
+        validate_signing_key_values(
+            args.signing_key_url,
+            args.signing_key_fingerprint,
         )
         if not 1 <= args.poll_timeout <= 900 or not 1 <= args.request_timeout <= 120:
             raise ContractError("timeout is outside the permitted range")
+        key_payload = bootstrap_signing_key(
+            args.signing_key_url,
+            args.signing_key_fingerprint,
+            args.request_timeout,
+        )
         artifacts = inspect_directory(args.directory)
         if not artifacts:
             raise ContractError("no DEBs available for APT publication")
         architectures = sorted({item.architecture for item in artifacts})
         if architectures != ["amd64", "arm64"]:
             raise ContractError("APT publication requires amd64 and arm64 artifacts")
-        records = {
-            architecture: fetch_records(
-                args.repository_url,
-                args.distribution,
-                args.component,
-                architecture,
-                args.request_timeout,
-            )
-            for architecture in architectures
-        }
+        records = fetch_verified_records(
+            args.repository_url,
+            args.distribution,
+            args.component,
+            architectures,
+            args.request_timeout,
+            key_payload,
+            args.signing_key_fingerprint,
+        )
         uploads = preflight(artifacts, records)
         for artifact in uploads:
             upload(
@@ -240,15 +256,10 @@ def main() -> int:
                 args.distribution,
                 args.component,
                 args.request_timeout,
+                key_payload,
+                args.signing_key_fingerprint,
             ):
-                inrelease = open_public(
-                    f"{args.repository_url.rstrip('/')}/dists/"
-                    f"{urllib.parse.quote(args.distribution, safe='')}/InRelease",
-                    args.request_timeout,
-                )
-                if not inrelease.startswith(b"-----BEGIN PGP SIGNED MESSAGE-----"):
-                    raise ContractError("APT InRelease is not clearsigned")
-                print("APT indexes and DEB SHA-256 values match")
+                print("APT signature, signed indexes, and DEB SHA-256 values match")
                 return 0
             if time.monotonic() >= deadline:
                 raise ContractError("APT index did not converge before timeout")
