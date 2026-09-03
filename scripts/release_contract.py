@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 SCHEMA_ID = "xr-linux-deb-release-manifest/1"
@@ -51,14 +52,11 @@ def safe_repository_path(value: object, field: str) -> str:
     return value
 
 
-def validate_dispatch_values(
+def validate_source_values(
     source_repository: str,
     source_tag: str,
     source_commit: str,
     manifest_path: str,
-    apt_repository_url: str,
-    apt_distribution: str,
-    apt_component: str,
 ) -> None:
     if not REPOSITORY_RE.fullmatch(source_repository):
         raise ContractError("source_repository must be OWNER/REPOSITORY")
@@ -68,22 +66,129 @@ def validate_dispatch_values(
         raise ContractError("source_commit must be a lowercase 40-character SHA")
     safe_repository_path(manifest_path, "manifest_path")
 
-    parsed = urlsplit(apt_repository_url)
+
+def validate_source_auth_selection(
+    token_configured: bool,
+    ssh_key_configured: bool,
+) -> str:
+    if not isinstance(token_configured, bool) or not isinstance(
+        ssh_key_configured, bool
+    ):
+        raise ContractError("private source credential flags must be boolean")
+    if token_configured == ssh_key_configured:
+        raise ContractError(
+            "configure exactly one of XR_PRIVATE_SOURCE_TOKEN or "
+            "XR_PRIVATE_SOURCE_SSH_KEY"
+        )
+    return "token" if token_configured else "ssh"
+
+
+def validate_apt_values(
+    apt_repository_url: str,
+    apt_distribution: str,
+    apt_component: str,
+    apt_allow_plain_http: bool = False,
+) -> None:
+    if not isinstance(apt_allow_plain_http, bool):
+        raise ContractError("apt_allow_plain_http must be a boolean")
     if (
-        parsed.scheme != "https"
-        or not parsed.hostname
+        not isinstance(apt_repository_url, str)
+        or not apt_repository_url
+        or "\\" in apt_repository_url
+        or any(
+            ord(character) < 0x21 or character.isspace()
+            for character in apt_repository_url
+        )
+    ):
+        raise ContractError("apt_repository_url contains an invalid character")
+    try:
+        parsed = urlsplit(apt_repository_url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ContractError("apt_repository_url is invalid") from exc
+    if parsed.scheme not in {"http", "https"}:
+        raise ContractError("apt_repository_url must use HTTP or HTTPS")
+    if parsed.scheme == "http" and not apt_allow_plain_http:
+        raise ContractError(
+            "plaintext HTTP APT requires explicit apt_allow_plain_http opt-in"
+        )
+    if (
+        not hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
+        or "?" in apt_repository_url
+        or "#" in apt_repository_url
     ):
         raise ContractError(
-            "apt_repository_url must be HTTPS without credentials, query, or fragment"
+            "apt_repository_url must not contain credentials, query, or fragment"
         )
+    if ":" in hostname:
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ipaddress.AddressValueError as exc:
+            raise ContractError("apt_repository_url hostname is invalid") from exc
+        expected_netloc = f"[{hostname}]"
+    else:
+        labels = hostname.split(".")
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in labels
+        ):
+            raise ContractError("apt_repository_url hostname is invalid")
+        expected_netloc = hostname
+    if port == 0:
+        raise ContractError("apt_repository_url port is invalid")
+    if port is not None:
+        expected_netloc += f":{port}"
+    if parsed.netloc.lower() != expected_netloc.lower():
+        raise ContractError("apt_repository_url authority is invalid")
+    path = parsed.path
+    if (
+        unquote(path) != path
+        or "\\" in path
+        or "//" in path
+        or any(ord(character) < 0x20 or character.isspace() for character in path)
+    ):
+        raise ContractError("apt_repository_url contains a suspicious path")
+    path_parts = [part for part in path.split("/") if part]
+    if any(
+        part in {".", ".."}
+        or not re.fullmatch(r"[A-Za-z0-9._~-]+", part)
+        or part.lower() in {"dists", "pool", "upload"}
+        for part in path_parts
+    ):
+        raise ContractError("apt_repository_url must name an APT repository base path")
     if not APT_NAME_RE.fullmatch(apt_distribution):
         raise ContractError("apt_distribution is invalid")
     if not APT_NAME_RE.fullmatch(apt_component):
         raise ContractError("apt_component is invalid")
+
+
+def validate_dispatch_values(
+    source_repository: str,
+    source_tag: str,
+    source_commit: str,
+    manifest_path: str,
+    apt_repository_url: str,
+    apt_distribution: str,
+    apt_component: str,
+    apt_allow_plain_http: bool = False,
+) -> None:
+    validate_source_values(
+        source_repository,
+        source_tag,
+        source_commit,
+        manifest_path,
+    )
+    validate_apt_values(
+        apt_repository_url,
+        apt_distribution,
+        apt_component,
+        apt_allow_plain_http,
+    )
 
 
 def validate_manifest_data(data: object) -> dict:

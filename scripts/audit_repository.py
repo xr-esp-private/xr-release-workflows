@@ -12,6 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = ROOT / ".github/workflows"
 USES_RE = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)", re.MULTILINE)
 FULL_SHA_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+SOURCE_SECRET_IN_ENV_RE = re.compile(
+    r"^\s+[A-Z][A-Z0-9_]*:\s*\$\{\{\s*secrets\."
+    r"XR_PRIVATE_SOURCE_(?:TOKEN|SSH_KEY)\s*\}\}\s*$",
+    re.MULTILINE,
+)
+DIRECT_CALLER_INPUT_ARGUMENT_RE = re.compile(
+    r"^\s+--[^\n]*\$\{\{\s*inputs\.", re.MULTILINE
+)
 
 
 def fail(message: str) -> None:
@@ -56,13 +64,35 @@ def main() -> int:
                 continue
             if not FULL_SHA_RE.fullmatch(reference):
                 fail(f"floating action/workflow reference: {reference}")
+        if SOURCE_SECRET_IN_ENV_RE.search(text):
+            fail(
+                f"private source credential exposed as an environment value in "
+                f"{path.relative_to(ROOT)}"
+            )
+        if DIRECT_CALLER_INPUT_ARGUMENT_RE.search(text):
+            fail(
+                f"caller input interpolated directly into a shell argument in "
+                f"{path.relative_to(ROOT)}"
+            )
 
     reusable = (WORKFLOW_ROOT / "linux-deb-release.yml").read_text(encoding="utf-8")
     required = [
         "workflow_call:",
+        "apt_allow_plain_http:",
+        "apt_signing_key_url:",
+        "apt_signing_key_fingerprint:",
+        "default: false",
+        "type: boolean",
         "XR_PRIVATE_SOURCE_TOKEN:",
+        "XR_PRIVATE_SOURCE_SSH_KEY:",
+        "scripts/validate_source_auth.py",
+        "ssh-key: ${{ secrets.XR_PRIVATE_SOURCE_SSH_KEY }}",
+        "ssh-strict: true",
         "XR_APT_REPO_USER:",
         "XR_APT_REPO_PASS:",
+        "scripts/validate_apt_trust.py",
+        "--signing-key-url",
+        "--signing-key-fingerprint",
         "persist-credentials: false",
         "permissions:\n      contents: read",
         "permissions:\n      contents: write",
@@ -70,6 +100,99 @@ def main() -> int:
     for snippet in required:
         if snippet not in reusable:
             fail(f"reusable workflow is missing required contract: {snippet!r}")
+    if reusable.index("scripts/validate_apt_trust.py") > reusable.index(
+        "Check out the exact private source tag with the read-only token"
+    ):
+        fail("APT signing key must be bootstrapped before private source checkout")
+
+    apt_publish = (ROOT / "scripts/apt_publish.py").read_text(encoding="utf-8")
+    apt_trust = (ROOT / "scripts/apt_trust.py").read_text(encoding="utf-8")
+    for snippet in (
+        "fetch_verified_records(",
+        "fetch_verified_index_payloads(",
+        "bootstrap_signing_key(",
+    ):
+        if snippet not in apt_publish:
+            fail(f"APT publisher is missing signed-index verification: {snippet!r}")
+    for snippet in (
+        'shutil.which("gpgv")',
+        '"raw.githubusercontent.com"',
+        "class NoRedirect",
+        '"--keyring"',
+        '"--output"',
+        "verify_inrelease(",
+        "parse_release_sha256(",
+        "verify_signed_file(",
+        "fetch_verified_index_payloads(",
+        "verify_repository_bootstrap(",
+    ):
+        if snippet not in apt_trust:
+            fail(f"APT trust bootstrap is missing required contract: {snippet!r}")
+    if "BEGIN PGP SIGNED MESSAGE" in apt_publish:
+        fail("APT publisher must not substitute a clearsigned header check for gpgv")
+
+    validation = (WORKFLOW_ROOT / "linux-deb-validate.yml").read_text(
+        encoding="utf-8"
+    )
+    validation_required = [
+        "workflow_call:",
+        "XR_PRIVATE_SOURCE_TOKEN:",
+        "XR_PRIVATE_SOURCE_SSH_KEY:",
+        "scripts/validate_source_auth.py",
+        "ssh-key: ${{ secrets.XR_PRIVATE_SOURCE_SSH_KEY }}",
+        "ssh-strict: true",
+        "scripts/validate_source.py",
+        "scripts/validate_release.py",
+        "permissions:\n      contents: read",
+    ]
+    for snippet in validation_required:
+        if snippet not in validation:
+            fail(f"validation workflow is missing required contract: {snippet!r}")
+    for forbidden in (
+        "XR_APT_",
+        "apt_repository",
+        "github_release.py",
+        "contents: write",
+    ):
+        if forbidden in validation:
+            fail(f"validation workflow contains publication capability: {forbidden!r}")
+    for path, text in (
+        (WORKFLOW_ROOT / "linux-deb-release.yml", reusable),
+        (WORKFLOW_ROOT / "linux-deb-validate.yml", validation),
+    ):
+        if text.count("scripts/validate_source_auth.py") != 2:
+            fail(
+                f"each source-checkout job must validate credential selection in "
+                f"{path.relative_to(ROOT)}"
+            )
+        ssh_checkout_sections = text.split(
+            "- name: Check out the exact private source tag with the read-only Deploy Key"
+        )[1:]
+        token_checkout_sections = text.split(
+            "- name: Check out the exact private source tag with the read-only token"
+        )[1:]
+        if len(ssh_checkout_sections) != 2 or len(token_checkout_sections) != 2:
+            fail(f"source credential checkout branches are incomplete in {path.relative_to(ROOT)}")
+        for section in ssh_checkout_sections:
+            block = section.split("\n\n", 1)[0]
+            if "token:" in block or "ssh-key:" not in block or "ssh-strict: true" not in block:
+                fail(f"Deploy Key checkout branch is unsafe in {path.relative_to(ROOT)}")
+        for section in token_checkout_sections:
+            block = section.split("\n\n", 1)[0]
+            if "ssh-key:" in block or "token:" not in block:
+                fail(f"token checkout branch is unsafe in {path.relative_to(ROOT)}")
+
+    ci = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
+    required_checks = [
+        "name: Static contract checks",
+        "name: Fixture DEB (${{ matrix.architecture }})",
+        "name: Aggregate release contract",
+        "command -v gpg >/dev/null",
+        "command -v gpgv >/dev/null",
+    ]
+    for snippet in required_checks:
+        if snippet not in ci:
+            fail(f"CI is missing a branch-protection check contract: {snippet!r}")
     print(f"repository audit passed for {len(tracked)} files")
     return 0
 

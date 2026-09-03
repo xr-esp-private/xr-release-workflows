@@ -1,4 +1,4 @@
-name: Reusable Linux DEB release
+name: Reusable Linux DEB validation
 
 on:
   workflow_call:
@@ -19,41 +19,6 @@ on:
         description: Repository-relative path to the v1 release manifest
         required: true
         type: string
-      apt_repository_url:
-        description: HTTP(S) APT repository base URL without credentials
-        required: true
-        type: string
-      apt_allow_plain_http:
-        description: Explicitly accept plaintext HTTP transport risk for this publication
-        required: false
-        default: false
-        type: boolean
-      apt_distribution:
-        description: APT distribution or suite
-        required: true
-        type: string
-      apt_component:
-        description: APT component
-        required: true
-        type: string
-      apt_signing_key_url:
-        description: GitHub HTTPS raw URL pinned to the commit containing the public signing key
-        required: true
-        type: string
-      apt_signing_key_fingerprint:
-        description: Full uppercase fingerprint of the expected APT signing key
-        required: true
-        type: string
-      prerelease:
-        description: Publish the GitHub Release as a prerelease
-        required: false
-        default: false
-        type: boolean
-      apt_index_timeout_seconds:
-        description: Maximum wait for APT index convergence
-        required: false
-        default: 180
-        type: number
     secrets:
       XR_PRIVATE_SOURCE_TOKEN:
         description: Optional Contents-read token scoped to the exact private source repository
@@ -61,17 +26,11 @@ on:
       XR_PRIVATE_SOURCE_SSH_KEY:
         description: Optional read-only Deploy Key for the exact private source repository
         required: false
-      XR_APT_REPO_USER:
-        description: APT upload username supplied by the caller
-        required: true
-      XR_APT_REPO_PASS:
-        description: APT upload password supplied by the caller
-        required: true
 
 permissions: {}
 
 concurrency:
-  group: xr-linux-deb-release-${{ github.repository }}-${{ inputs.source_tag }}
+  group: xr-linux-deb-validate-${{ github.repository }}-${{ inputs.source_tag }}
   cancel-in-progress: false
 
 defaults:
@@ -105,51 +64,12 @@ jobs:
           SOURCE_TAG: ${{ inputs.source_tag }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           SOURCE_MANIFEST_PATH: ${{ inputs.source_manifest_path }}
-          APT_REPOSITORY_URL: ${{ inputs.apt_repository_url }}
-          APT_DISTRIBUTION: ${{ inputs.apt_distribution }}
-          APT_COMPONENT: ${{ inputs.apt_component }}
-          APT_SIGNING_KEY_URL: ${{ inputs.apt_signing_key_url }}
-          APT_SIGNING_KEY_FINGERPRINT: ${{ inputs.apt_signing_key_fingerprint }}
-          APT_ALLOW_PLAIN_HTTP: ${{ inputs.apt_allow_plain_http }}
-        run: |
-          set -euo pipefail
-          args=(
-            --source-repository "$SOURCE_REPOSITORY"
-            --source-tag "$SOURCE_TAG"
-            --source-commit "$SOURCE_COMMIT"
-            --manifest-path "$SOURCE_MANIFEST_PATH"
-            --apt-repository-url "$APT_REPOSITORY_URL"
-            --apt-distribution "$APT_DISTRIBUTION"
-            --apt-component "$APT_COMPONENT"
-            --apt-signing-key-url "$APT_SIGNING_KEY_URL"
-            --apt-signing-key-fingerprint "$APT_SIGNING_KEY_FINGERPRINT"
-          )
-          if [ "$APT_ALLOW_PLAIN_HTTP" = true ]; then
-            args+=(--apt-allow-plain-http)
-          fi
-          python3 .xr-release-workflows/scripts/validate_dispatch.py "${args[@]}"
-
-      - name: Bootstrap the pinned APT signing key before private checkout
-        env:
-          APT_REPOSITORY_URL: ${{ inputs.apt_repository_url }}
-          APT_DISTRIBUTION: ${{ inputs.apt_distribution }}
-          APT_COMPONENT: ${{ inputs.apt_component }}
-          APT_ALLOW_PLAIN_HTTP: ${{ inputs.apt_allow_plain_http }}
-          APT_SIGNING_KEY_URL: ${{ inputs.apt_signing_key_url }}
-          APT_SIGNING_KEY_FINGERPRINT: ${{ inputs.apt_signing_key_fingerprint }}
-        run: |
-          set -euo pipefail
-          args=(
-            --repository-url "$APT_REPOSITORY_URL"
-            --distribution "$APT_DISTRIBUTION"
-            --component "$APT_COMPONENT"
-            --key-url "$APT_SIGNING_KEY_URL"
-            --fingerprint "$APT_SIGNING_KEY_FINGERPRINT"
-          )
-          if [ "$APT_ALLOW_PLAIN_HTTP" = true ]; then
-            args+=(--allow-plain-http)
-          fi
-          python3 .xr-release-workflows/scripts/validate_apt_trust.py "${args[@]}"
+        run: >-
+          python3 .xr-release-workflows/scripts/validate_source.py
+          --source-repository "$SOURCE_REPOSITORY"
+          --source-tag "$SOURCE_TAG"
+          --source-commit "$SOURCE_COMMIT"
+          --manifest-path "$SOURCE_MANIFEST_PATH"
 
       - name: Require exactly one private source credential
         id: source-auth
@@ -201,14 +121,6 @@ jobs:
             --manifest-path "$SOURCE_MANIFEST_PATH" \
             --metadata-dir release-metadata \
             --github-output "$GITHUB_OUTPUT"
-
-      - name: Preserve validated public release metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: release-metadata
-          path: release-metadata/
-          if-no-files-found: error
-          retention-days: 7
 
   build:
     name: Build and test (${{ matrix.architecture }})
@@ -303,20 +215,20 @@ jobs:
       - name: Upload validated architecture artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: debs-${{ matrix.architecture }}
+          name: validation-debs-${{ matrix.architecture }}
           path: |
             source/release-out/*.deb
             source/release-out/SHA256SUMS.${{ matrix.architecture }}
           if-no-files-found: error
           retention-days: 7
 
-  publish:
-    name: Draft, publish to APT, verify, and release
+  aggregate:
+    name: Validate merged two-architecture release
     needs: [prepare, build]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out the immutable workflow implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -326,16 +238,10 @@ jobs:
           path: .xr-release-workflows
           persist-credentials: false
 
-      - name: Download validated release metadata
+      - name: Download validated architecture artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: release-metadata
-          path: release-metadata
-
-      - name: Download all validated DEB artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          pattern: debs-*
+          pattern: validation-debs-*
           path: dist
           merge-multiple: true
 
@@ -350,58 +256,12 @@ jobs:
             --version "$RELEASE_VERSION" \
             --checksums-out dist/SHA256SUMS
 
-      - name: Create or verify a byte-identical draft GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SOURCE_TAG: ${{ inputs.source_tag }}
-          TARGET_COMMIT: ${{ github.sha }}
-          PRERELEASE: ${{ inputs.prerelease }}
-        run: |
-          set -euo pipefail
-          args=(
-            prepare
-            --dist dist
-            --metadata release-metadata
-            --notes release-metadata/release-notes.md
-            --tag "$SOURCE_TAG"
-            --target-commit "$TARGET_COMMIT"
-          )
-          if [ "$PRERELEASE" = true ]; then
-            args+=(--prerelease)
-          fi
-          python3 .xr-release-workflows/scripts/github_release.py "${args[@]}"
-
-      - name: Strictly upload to APT and verify signed indexes and SHA-256
-        env:
-          XR_APT_REPO_USER: ${{ secrets.XR_APT_REPO_USER }}
-          XR_APT_REPO_PASS: ${{ secrets.XR_APT_REPO_PASS }}
-          APT_ALLOW_PLAIN_HTTP: ${{ inputs.apt_allow_plain_http }}
-          APT_REPOSITORY_URL: ${{ inputs.apt_repository_url }}
-          APT_DISTRIBUTION: ${{ inputs.apt_distribution }}
-          APT_COMPONENT: ${{ inputs.apt_component }}
-          APT_INDEX_TIMEOUT_SECONDS: ${{ inputs.apt_index_timeout_seconds }}
-          APT_SIGNING_KEY_URL: ${{ inputs.apt_signing_key_url }}
-          APT_SIGNING_KEY_FINGERPRINT: ${{ inputs.apt_signing_key_fingerprint }}
-        run: |
-          set -euo pipefail
-          args=(
-            --directory dist
-            --repository-url "$APT_REPOSITORY_URL"
-            --distribution "$APT_DISTRIBUTION"
-            --component "$APT_COMPONENT"
-            --poll-timeout "$APT_INDEX_TIMEOUT_SECONDS"
-            --signing-key-url "$APT_SIGNING_KEY_URL"
-            --signing-key-fingerprint "$APT_SIGNING_KEY_FINGERPRINT"
-          )
-          if [ "$APT_ALLOW_PLAIN_HTTP" = true ]; then
-            args+=(--allow-plain-http)
-          fi
-          python3 .xr-release-workflows/scripts/apt_publish.py "${args[@]}"
-
-      - name: Publish the GitHub Release only after APT verification
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SOURCE_TAG: ${{ inputs.source_tag }}
-        run: >-
-          python3 .xr-release-workflows/scripts/github_release.py finalize
-          --tag "$SOURCE_TAG"
+      - name: Preserve the validated merged artifact set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: validated-release
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS*
+          if-no-files-found: error
+          retention-days: 7
