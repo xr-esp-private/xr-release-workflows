@@ -162,6 +162,25 @@ def main() -> int:
         (WORKFLOW_ROOT / "linux-deb-release.yml", reusable),
         (WORKFLOW_ROOT / "linux-deb-validate.yml", validation),
     ):
+        for dependency in ("ca-certificates", "git", "openssh-client", "python3"):
+            if dependency not in text:
+                fail(
+                    f"product-container bootstrap is missing {dependency!r} in "
+                    f"{path.relative_to(ROOT)}"
+                )
+        auth_steps = [
+            match.start()
+            for match in re.finditer(
+                "Require exactly one private source credential", text
+            )
+        ]
+        if len(auth_steps) != 2 or text.index(
+            "Bootstrap workflow dependencies in the product container"
+        ) > auth_steps[1]:
+            fail(
+                f"product-container bootstrap must precede private source auth in "
+                f"{path.relative_to(ROOT)}"
+            )
         if "github.workflow_sha" in text:
             fail(
                 f"reusable workflow must not use the caller workflow SHA in "
