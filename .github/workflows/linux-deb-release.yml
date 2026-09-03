@@ -3,6 +3,10 @@ name: Reusable Linux DEB release
 on:
   workflow_call:
     inputs:
+      workflow_implementation_commit:
+        description: Exact 40-character commit containing this reusable workflow implementation
+        required: true
+        type: string
       source_repository:
         description: Private source repository in OWNER/REPOSITORY form
         required: true
@@ -91,11 +95,21 @@ jobs:
       build_script: ${{ steps.source.outputs.build_script }}
       version: ${{ steps.source.outputs.version }}
     steps:
+      - name: Require an immutable workflow implementation commit
+        env:
+          WORKFLOW_IMPLEMENTATION_COMMIT: ${{ inputs.workflow_implementation_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_IMPLEMENTATION_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "workflow_implementation_commit must be a lowercase 40-character commit" >&2
+            exit 2
+          }
+
       - name: Check out the immutable workflow implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: xr-esp-private/xr-release-workflows
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ inputs.workflow_implementation_commit }}
           path: .xr-release-workflows
           persist-credentials: false
 
@@ -227,7 +241,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: xr-esp-private/xr-release-workflows
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ inputs.workflow_implementation_commit }}
           path: .xr-release-workflows
           persist-credentials: false
 
@@ -322,7 +336,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: xr-esp-private/xr-release-workflows
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ inputs.workflow_implementation_commit }}
           path: .xr-release-workflows
           persist-credentials: false
 

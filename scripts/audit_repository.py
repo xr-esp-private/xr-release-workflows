@@ -78,6 +78,7 @@ def main() -> int:
     reusable = (WORKFLOW_ROOT / "linux-deb-release.yml").read_text(encoding="utf-8")
     required = [
         "workflow_call:",
+        "workflow_implementation_commit:",
         "apt_allow_plain_http:",
         "apt_signing_key_url:",
         "apt_signing_key_fingerprint:",
@@ -136,6 +137,7 @@ def main() -> int:
     )
     validation_required = [
         "workflow_call:",
+        "workflow_implementation_commit:",
         "XR_PRIVATE_SOURCE_TOKEN:",
         "XR_PRIVATE_SOURCE_SSH_KEY:",
         "scripts/validate_source_auth.py",
@@ -160,6 +162,16 @@ def main() -> int:
         (WORKFLOW_ROOT / "linux-deb-release.yml", reusable),
         (WORKFLOW_ROOT / "linux-deb-validate.yml", validation),
     ):
+        if "github.workflow_sha" in text:
+            fail(
+                f"reusable workflow must not use the caller workflow SHA in "
+                f"{path.relative_to(ROOT)}"
+            )
+        if text.count("ref: ${{ inputs.workflow_implementation_commit }}") != 3:
+            fail(
+                f"every implementation checkout must use the explicit immutable "
+                f"commit in {path.relative_to(ROOT)}"
+            )
         if text.count("scripts/validate_source_auth.py") != 2:
             fail(
                 f"each source-checkout job must validate credential selection in "
