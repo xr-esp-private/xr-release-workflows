@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/xr-esp-private/xr-release-workflows/schema/release-manifest.schema.json",
+  "title": "XR Linux DEB release manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "packages",
+    "build_script",
+    "release_notes_path",
+    "architectures"
+  ],
+  "properties": {
+    "schema": {
+      "const": "xr-linux-deb-release-manifest/1"
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9+.-]{1,127}$"
+      }
+    },
+    "build_script": {
+      "$ref": "#/$defs/repositoryPath"
+    },
+    "release_notes_path": {
+      "$ref": "#/$defs/repositoryPath"
+    },
+    "architectures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amd64", "arm64"],
+      "properties": {
+        "amd64": {
+          "allOf": [
+            { "$ref": "#/$defs/architecture" },
+            {
+              "properties": {
+                "runner": { "const": "ubuntu-24.04" }
+              }
+            }
+          ]
+        },
+        "arm64": {
+          "allOf": [
+            { "$ref": "#/$defs/architecture" },
+            {
+              "properties": {
+                "runner": { "const": "ubuntu-24.04-arm" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9._+/-]+$"
+    },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "container"],
+      "properties": {
+        "runner": { "type": "string" },
+        "container": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]*@sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

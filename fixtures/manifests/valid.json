@@ -1,0 +1,16 @@
+{
+  "schema": "xr-linux-deb-release-manifest/1",
+  "packages": ["xr-release-fixture"],
+  "build_script": "packaging/release-build.sh",
+  "release_notes_path": "CHANGELOG.md",
+  "architectures": {
+    "amd64": {
+      "runner": "ubuntu-24.04",
+      "container": "example.invalid/xr/debian:12@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "arm64": {
+      "runner": "ubuntu-24.04-arm",
+      "container": "example.invalid/xr/debian:12@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}

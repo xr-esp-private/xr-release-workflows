@@ -1,0 +1,270 @@
+name: Reusable Linux DEB release
+
+on:
+  workflow_call:
+    inputs:
+      source_repository:
+        description: Private source repository in OWNER/REPOSITORY form
+        required: true
+        type: string
+      source_tag:
+        description: Existing exact v-prefixed source tag
+        required: true
+        type: string
+      source_commit:
+        description: Lowercase 40-character commit SHA resolved by the source dispatcher
+        required: true
+        type: string
+      source_manifest_path:
+        description: Repository-relative path to the v1 release manifest
+        required: true
+        type: string
+      apt_repository_url:
+        description: HTTPS APT repository base URL without credentials
+        required: true
+        type: string
+      apt_distribution:
+        description: APT distribution or suite
+        required: true
+        type: string
+      apt_component:
+        description: APT component
+        required: true
+        type: string
+      prerelease:
+        description: Publish the GitHub Release as a prerelease
+        required: false
+        default: false
+        type: boolean
+      apt_index_timeout_seconds:
+        description: Maximum wait for APT index convergence
+        required: false
+        default: 180
+        type: number
+    secrets:
+      XR_PRIVATE_SOURCE_TOKEN:
+        description: Contents-read token scoped to the exact private source repository
+        required: true
+      XR_APT_REPO_USER:
+        description: APT upload username supplied by the caller
+        required: true
+      XR_APT_REPO_PASS:
+        description: APT upload password supplied by the caller
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: xr-linux-deb-release-${{ github.repository }}-${{ inputs.source_tag }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Validate source release contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.source.outputs.matrix }}
+      packages: ${{ steps.source.outputs.packages }}
+      build_script: ${{ steps.source.outputs.build_script }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - name: Check out the immutable workflow implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: xr-esp-private/xr-release-workflows
+          ref: ${{ github.workflow_sha }}
+          path: .xr-release-workflows
+          persist-credentials: false
+
+      - name: Reject unsafe or incomplete caller inputs before private checkout
+        run: >-
+          python3 .xr-release-workflows/scripts/validate_dispatch.py
+          --source-repository '${{ inputs.source_repository }}'
+          --source-tag '${{ inputs.source_tag }}'
+          --source-commit '${{ inputs.source_commit }}'
+          --manifest-path '${{ inputs.source_manifest_path }}'
+          --apt-repository-url '${{ inputs.apt_repository_url }}'
+          --apt-distribution '${{ inputs.apt_distribution }}'
+          --apt-component '${{ inputs.apt_component }}'
+
+      - name: Check out the exact private source tag without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: refs/tags/${{ inputs.source_tag }}
+          token: ${{ secrets.XR_PRIVATE_SOURCE_TOKEN }}
+          fetch-depth: 1
+          path: source
+          persist-credentials: false
+
+      - name: Bind source tag, commit, manifest, and release notes
+        id: source
+        run: >-
+          python3 .xr-release-workflows/scripts/prepare_source.py
+          --source-dir source
+          --source-repository '${{ inputs.source_repository }}'
+          --source-tag '${{ inputs.source_tag }}'
+          --source-commit '${{ inputs.source_commit }}'
+          --manifest-path '${{ inputs.source_manifest_path }}'
+          --metadata-dir release-metadata
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Preserve validated public release metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-metadata
+          path: release-metadata/
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build and test (${{ matrix.architecture }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.container }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the immutable workflow implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: xr-esp-private/xr-release-workflows
+          ref: ${{ github.workflow_sha }}
+          path: .xr-release-workflows
+          persist-credentials: false
+
+      - name: Check out the exact private source tag without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: refs/tags/${{ inputs.source_tag }}
+          token: ${{ secrets.XR_PRIVATE_SOURCE_TOKEN }}
+          fetch-depth: 1
+          path: source
+          persist-credentials: false
+
+      - name: Recheck exact source commit
+        working-directory: source
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse 'HEAD^{commit}')
+          test "$actual" = "$EXPECTED_SOURCE_COMMIT"
+
+      - name: Run the product-owned build and test entrypoint
+        working-directory: source
+        env:
+          XR_RELEASE_ARCH: ${{ matrix.architecture }}
+          XR_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          XR_RELEASE_OUTPUT_DIR: ${{ github.workspace }}/source/release-out
+        run: |
+          set -euo pipefail
+          test -f '${{ needs.prepare.outputs.build_script }}'
+          test ! -L '${{ needs.prepare.outputs.build_script }}'
+          bash '${{ needs.prepare.outputs.build_script }}'
+
+      - name: Validate package count, identity, version, architecture, and bytes
+        run: >-
+          python3 .xr-release-workflows/scripts/validate_debs.py
+          --directory source/release-out
+          --packages-json '${{ needs.prepare.outputs.packages }}'
+          --version '${{ needs.prepare.outputs.version }}'
+          --architecture '${{ matrix.architecture }}'
+          --checksums-out 'source/release-out/SHA256SUMS.${{ matrix.architecture }}'
+
+      - name: Upload validated architecture artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: debs-${{ matrix.architecture }}
+          path: |
+            source/release-out/*.deb
+            source/release-out/SHA256SUMS.${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Draft, publish to APT, verify, and release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the immutable workflow implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: xr-esp-private/xr-release-workflows
+          ref: ${{ github.workflow_sha }}
+          path: .xr-release-workflows
+          persist-credentials: false
+
+      - name: Download validated release metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-metadata
+          path: release-metadata
+
+      - name: Download all validated DEB artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: debs-*
+          path: dist
+          merge-multiple: true
+
+      - name: Validate the complete two-architecture release
+        run: >-
+          python3 .xr-release-workflows/scripts/validate_release.py
+          --directory dist
+          --packages-json '${{ needs.prepare.outputs.packages }}'
+          --version '${{ needs.prepare.outputs.version }}'
+          --checksums-out dist/SHA256SUMS
+
+      - name: Create or verify a byte-identical draft GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(
+            prepare
+            --dist dist
+            --metadata release-metadata
+            --notes release-metadata/release-notes.md
+            --tag '${{ inputs.source_tag }}'
+            --target-commit '${{ github.sha }}'
+          )
+          if [ '${{ inputs.prerelease }}' = true ]; then
+            args+=(--prerelease)
+          fi
+          python3 .xr-release-workflows/scripts/github_release.py "${args[@]}"
+
+      - name: Strictly upload to APT and verify signed indexes and SHA-256
+        env:
+          XR_APT_REPO_USER: ${{ secrets.XR_APT_REPO_USER }}
+          XR_APT_REPO_PASS: ${{ secrets.XR_APT_REPO_PASS }}
+        run: >-
+          python3 .xr-release-workflows/scripts/apt_publish.py
+          --directory dist
+          --repository-url '${{ inputs.apt_repository_url }}'
+          --distribution '${{ inputs.apt_distribution }}'
+          --component '${{ inputs.apt_component }}'
+          --poll-timeout '${{ inputs.apt_index_timeout_seconds }}'
+
+      - name: Publish the GitHub Release only after APT verification
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 .xr-release-workflows/scripts/github_release.py finalize
+          --tag '${{ inputs.source_tag }}'
