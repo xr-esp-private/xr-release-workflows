@@ -92,6 +92,12 @@ put exactly one DEB per declared package in that output directory. v1 does not
 support `Architecture: all`; each declared package must be present once for
 each binary architecture.
 
+Before private source checkout, the shared workflow bootstraps
+`ca-certificates`, `git`, `openssh-client`, and `python3` inside the product
+container. Product containers must therefore be Debian/Ubuntu-compatible and
+provide `apt-get`; product-specific build dependencies remain owned by the
+repository build entrypoint.
+
 ## Public caller example
 
 Production callers reference an immutable 40-character workflow commit. The

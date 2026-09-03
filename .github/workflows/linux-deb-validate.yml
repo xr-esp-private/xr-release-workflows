@@ -157,6 +157,17 @@ jobs:
           path: .xr-release-workflows
           persist-credentials: false
 
+      - name: Bootstrap workflow dependencies in the product container
+        run: |
+          set -euo pipefail
+          command -v apt-get >/dev/null || {
+            echo "product build containers must provide apt-get" >&2
+            exit 2
+          }
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git openssh-client python3
+
       - name: Require exactly one private source credential
         id: source-auth
         env:
