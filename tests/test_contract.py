@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -76,6 +78,85 @@ class DispatchTests(unittest.TestCase):
     def test_traversal_manifest_is_rejected(self) -> None:
         with self.assertRaises(ContractError):
             self.valid(manifest_path="../release.json")
+
+
+class SourceBindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="xr-source-binding-")
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.source, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "fixture@example.invalid"],
+            cwd=self.source,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "XR Fixture"], cwd=self.source, check=True
+        )
+        (self.source / "packaging").mkdir()
+        manifest = json.loads(
+            (ROOT / "fixtures/manifests/valid.json").read_text(encoding="utf-8")
+        )
+        (self.source / "packaging/release-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        (self.source / "packaging/release-build.sh").write_text(
+            "#!/bin/sh\nset -eu\n", encoding="utf-8"
+        )
+        (self.source / "CHANGELOG.md").write_text("# Fixture 1.2.3\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=self.source, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=self.source, check=True)
+        subprocess.run(["git", "tag", "v1.2.3"], cwd=self.source, check=True)
+        self.commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def prepare(self, tag: str, commit: str, suffix: str) -> subprocess.CompletedProcess[str]:
+        output = self.root / f"github-output-{suffix}"
+        output.touch()
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/prepare_source.py"),
+                "--source-dir",
+                str(self.source),
+                "--source-repository",
+                "xr-esp-private/fixture",
+                "--source-tag",
+                tag,
+                "--source-commit",
+                commit,
+                "--manifest-path",
+                "packaging/release-manifest.json",
+                "--metadata-dir",
+                str(self.root / f"metadata-{suffix}"),
+                "--github-output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_exact_tag_and_commit_are_accepted(self) -> None:
+        result = self.prepare("v1.2.3", self.commit, "valid")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_existing_tag_with_different_commit_is_rejected(self) -> None:
+        result = self.prepare("v1.2.3", "b" * 40, "wrong-commit")
+        self.assertEqual(result.returncode, 2)
+
+    def test_missing_exact_tag_is_rejected(self) -> None:
+        result = self.prepare("v9.9.9", self.commit, "wrong-tag")
+        self.assertEqual(result.returncode, 2)
 
 
 class AptCollisionTests(unittest.TestCase):

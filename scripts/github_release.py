@@ -144,7 +144,7 @@ def upload_asset(
 ) -> None:
     quoted = urllib.parse.urlencode({"name": name})
     body = path.read_bytes()
-    status, _ = request(
+    status, payload = request(
         token,
         f"{UPLOADS}/repos/{repository}/releases/{release_id}/assets?{quoted}",
         "POST",
@@ -153,6 +153,13 @@ def upload_asset(
     )
     if status != 201:
         raise ContractError(f"asset upload returned HTTP {status} for {name}")
+    try:
+        uploaded = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ContractError(f"asset upload returned invalid metadata for {name}") from exc
+    expected_digest = f"sha256:{sha256_file(path)}"
+    if uploaded.get("name") != name or uploaded.get("digest") != expected_digest:
+        raise ContractError(f"GitHub digest verification failed for uploaded asset {name}")
     print(f"uploaded draft asset {name}")
 
 
