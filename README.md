@@ -26,9 +26,19 @@ Publication additionally requires:
 - `XR_APT_REPO_USER`: upload identity supplied by the caller;
 - `XR_APT_REPO_PASS`: upload credential supplied by the caller.
 
-The APT URL, distribution, and component are non-sensitive caller inputs,
-normally sourced from selected Organization Variables. Secret inheritance is
-not part of the contract.
+The APT URL may be supplied as optional `XR_APT_REPO_URL`, explicitly mapped
+from an Organization Secret. It takes precedence over the compatible
+`apt_repository_url` input, normally sourced from `vars.XR_APT_REPO_URL`.
+At least one must contain a public repository base URL without credentials,
+an upload endpoint, query, or fragment. An invalid non-empty Secret fails
+validation; it does not silently fall back to the input. Distribution and
+component remain non-sensitive caller inputs. Secret inheritance is not part
+of the contract.
+
+Organization Secrets are not automatically global: their access policy must
+include the public caller repository (for example, Selected repositories).
+The caller must explicitly pass each accepted Secret to the reusable workflow.
+The workflow resolves the URL within each using job, never through job outputs.
 
 The independent validation workflow accepts the same exclusive choice between
 the Deploy Key and token. Supplying neither or both fails before every private
@@ -143,6 +153,7 @@ jobs:
       XR_PRIVATE_SOURCE_SSH_KEY: ${{ secrets.XR_PRIVATE_SOURCE_SSH_KEY }}
       XR_APT_REPO_USER: ${{ secrets.XR_APT_REPO_USER }}
       XR_APT_REPO_PASS: ${{ secrets.XR_APT_REPO_PASS }}
+      XR_APT_REPO_URL: ${{ secrets.XR_APT_REPO_URL }}
 ```
 
 The private source dispatcher separately holds a repository-scoped

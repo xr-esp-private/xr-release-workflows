@@ -22,6 +22,13 @@ callers must add the immutable `apt_signing_key_url` and complete
 `apt_signing_key_fingerprint`; validation-only callers do not receive either
 input and remain compatible.
 
+Optional `XR_APT_REPO_URL` is a backward-compatible publication addition.
+It overrides `apt_repository_url`; the URL input is now optional so a caller
+may configure only the Secret. Existing input/Organization Variable callers
+remain compatible. Empty or unsafe effective URLs still fail closed, and the
+validation-only workflow is unchanged. Adopting this addition requires a new
+reviewed implementation commit in both caller pin locations.
+
 ## Immutable execution reference
 
 Release callers must use the full commit SHA corresponding to an accepted

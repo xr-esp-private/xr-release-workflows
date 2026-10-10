@@ -4,6 +4,7 @@ import copy
 import hashlib
 import http.server
 import json
+import re
 import shutil
 import socketserver
 import subprocess
@@ -89,6 +90,10 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             self.valid(apt_repository_url="http://packages.example.invalid")
 
+    def test_missing_effective_apt_url_is_rejected(self) -> None:
+        with self.assertRaises(ContractError):
+            self.valid(apt_repository_url="")
+
     def test_explicit_plain_http_origin_is_accepted(self) -> None:
         self.valid(
             apt_repository_url="http://packages.example.invalid:8080/apt",
@@ -127,6 +132,55 @@ class DispatchTests(unittest.TestCase):
     def test_traversal_manifest_is_rejected(self) -> None:
         with self.assertRaises(ContractError):
             self.valid(manifest_path="../release.json")
+
+
+class AptWorkflowRoutingTests(unittest.TestCase):
+    """Static contract for GitHub's non-empty-secret-or-input URL selection."""
+
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/linux-deb-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_secret_and_compatible_input_are_optional(self) -> None:
+        self.assertRegex(
+            self.workflow,
+            r"      apt_repository_url:\n"
+            r"        description: [^\n]+\n"
+            r"        required: false\n"
+            r"        default: ''\n"
+            r"        type: string\n",
+        )
+        self.assertRegex(
+            self.workflow,
+            r"      XR_APT_REPO_URL:\n"
+            r"        description: [^\n]+\n"
+            r"        required: false\n",
+        )
+
+    def test_every_url_consumer_resolves_secret_before_input(self) -> None:
+        consumers = re.findall(r"^          APT_REPOSITORY_URL: (.+)$", self.workflow, re.M)
+        self.assertEqual(
+            consumers,
+            ["${{ secrets.XR_APT_REPO_URL || inputs.apt_repository_url }}"] * 3,
+        )
+        # Keep the routing inside both jobs; secret-bearing job outputs are
+        # suppressed by GitHub and cannot safely connect prepare to publish.
+        prepare = self.workflow.split("  prepare:\n", 1)[1].split("  build:\n", 1)[0]
+        publish = self.workflow.split("  publish:\n", 1)[1]
+        self.assertEqual(prepare.count("secrets.XR_APT_REPO_URL"), 2)
+        self.assertEqual(publish.count("secrets.XR_APT_REPO_URL"), 1)
+        outputs = prepare.split("    outputs:\n", 1)[1].split("    steps:\n", 1)[0]
+        self.assertNotIn("APT", outputs)
+        self.assertNotIn("apt_", outputs)
+        self.assertNotIn("secrets.", outputs)
+
+    def test_validation_only_has_no_url_or_publication_secrets(self) -> None:
+        validation = (ROOT / ".github/workflows/linux-deb-validate.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("XR_APT_", validation)
+        self.assertNotIn("apt_repository_url", validation)
 
 
 class AptSigningKeyInputTests(unittest.TestCase):

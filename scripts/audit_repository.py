@@ -91,6 +91,8 @@ def main() -> int:
         "ssh-strict: true",
         "XR_APT_REPO_USER:",
         "XR_APT_REPO_PASS:",
+        "XR_APT_REPO_URL:",
+        "APT_REPOSITORY_URL: ${{ secrets.XR_APT_REPO_URL || inputs.apt_repository_url }}",
         "scripts/validate_apt_trust.py",
         "--signing-key-url",
         "--signing-key-fingerprint",
@@ -101,6 +103,10 @@ def main() -> int:
     for snippet in required:
         if snippet not in reusable:
             fail(f"reusable workflow is missing required contract: {snippet!r}")
+    if reusable.count(
+        "APT_REPOSITORY_URL: ${{ secrets.XR_APT_REPO_URL || inputs.apt_repository_url }}"
+    ) != 3:
+        fail("each APT URL consumer must resolve the optional Secret before the input")
     if reusable.index("scripts/validate_apt_trust.py") > reusable.index(
         "Check out the exact private source tag with the read-only token"
     ):
