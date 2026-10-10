@@ -237,6 +237,12 @@ so Basic credentials cannot be forwarded to a redirect target. A failed APT
 operation leaves the GitHub Release as a draft and preserves existing APT
 versions.
 
+Draft recovery does not depend on a Git tag already existing: if the exact-tag
+API returns 404, the authenticated release list is searched across pages for
+the same exact tag. Invalid responses or duplicate matches fail closed. This
+lets prepare/finalize reuse a draft after an interrupted publication without
+creating another release or relaxing asset-byte checks.
+
 ## Plaintext HTTP risk acceptance and client bootstrap
 
 The simple DEB repository selected for the first product currently uses HTTP.

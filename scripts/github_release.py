@@ -86,11 +86,45 @@ def expected_assets(dist: Path, metadata: Path) -> dict[str, Path]:
 def release_by_tag(token: str, repository: str, tag: str) -> dict | None:
     quoted = urllib.parse.quote(tag, safe="")
     status, value = json_request(token, f"{API}/repos/{repository}/releases/tags/{quoted}")
-    if status == 404:
-        return None
-    if not isinstance(value, dict):
-        raise ContractError("GitHub release response is not an object")
-    return value
+    if status != 404:
+        if status != 200:
+            raise ContractError("GitHub release lookup returned an unexpected status")
+        validate_release_lookup(value)
+        if value["tag_name"] != tag:
+            raise ContractError("GitHub release response tag does not match requested tag")
+        return value
+
+    # A draft can exist before its Git tag, so the tag endpoint may return 404.
+    # Authenticated listing includes accessible drafts. Inspect all pages to
+    # reject ambiguous exact-tag matches rather than publishing the first one.
+    matched: dict | None = None
+    for page in range(1, 101):
+        status, releases = json_request(
+            token, f"{API}/repos/{repository}/releases?per_page=100&page={page}"
+        )
+        if status != 200 or not isinstance(releases, list) or len(releases) > 100:
+            raise ContractError("GitHub release list response is invalid")
+        for release in releases:
+            validate_release_lookup(release)
+            if release["tag_name"] == tag:
+                if matched is not None:
+                    raise ContractError("GitHub release list contains duplicate requested tags")
+                matched = release
+        if len(releases) < 100:
+            return matched
+    raise ContractError("GitHub release list exceeds the safe pagination limit")
+
+
+def validate_release_lookup(value: object) -> None:
+    if (
+        not isinstance(value, dict)
+        or type(value.get("id")) is not int
+        or value["id"] <= 0
+        or not isinstance(value.get("tag_name"), str)
+        or not value["tag_name"]
+        or type(value.get("draft")) is not bool
+    ):
+        raise ContractError("GitHub release lookup contains malformed metadata")
 
 
 def create_release(
