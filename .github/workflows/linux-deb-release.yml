@@ -24,8 +24,9 @@ on:
         required: true
         type: string
       apt_repository_url:
-        description: HTTP(S) APT repository base URL without credentials
-        required: true
+        description: Fallback HTTP(S) APT base URL when XR_APT_REPO_URL is not configured
+        required: false
+        default: ''
         type: string
       apt_allow_plain_http:
         description: Explicitly accept plaintext HTTP transport risk for this publication
@@ -71,6 +72,9 @@ on:
       XR_APT_REPO_PASS:
         description: APT upload password supplied by the caller
         required: true
+      XR_APT_REPO_URL:
+        description: Optional public APT base URL; takes precedence over apt_repository_url
+        required: false
 
 permissions: {}
 
@@ -119,7 +123,7 @@ jobs:
           SOURCE_TAG: ${{ inputs.source_tag }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           SOURCE_MANIFEST_PATH: ${{ inputs.source_manifest_path }}
-          APT_REPOSITORY_URL: ${{ inputs.apt_repository_url }}
+          APT_REPOSITORY_URL: ${{ secrets.XR_APT_REPO_URL || inputs.apt_repository_url }}
           APT_DISTRIBUTION: ${{ inputs.apt_distribution }}
           APT_COMPONENT: ${{ inputs.apt_component }}
           APT_SIGNING_KEY_URL: ${{ inputs.apt_signing_key_url }}
@@ -145,7 +149,7 @@ jobs:
 
       - name: Bootstrap the pinned APT signing key before private checkout
         env:
-          APT_REPOSITORY_URL: ${{ inputs.apt_repository_url }}
+          APT_REPOSITORY_URL: ${{ secrets.XR_APT_REPO_URL || inputs.apt_repository_url }}
           APT_DISTRIBUTION: ${{ inputs.apt_distribution }}
           APT_COMPONENT: ${{ inputs.apt_component }}
           APT_ALLOW_PLAIN_HTTP: ${{ inputs.apt_allow_plain_http }}
@@ -401,7 +405,7 @@ jobs:
           XR_APT_REPO_USER: ${{ secrets.XR_APT_REPO_USER }}
           XR_APT_REPO_PASS: ${{ secrets.XR_APT_REPO_PASS }}
           APT_ALLOW_PLAIN_HTTP: ${{ inputs.apt_allow_plain_http }}
-          APT_REPOSITORY_URL: ${{ inputs.apt_repository_url }}
+          APT_REPOSITORY_URL: ${{ secrets.XR_APT_REPO_URL || inputs.apt_repository_url }}
           APT_DISTRIBUTION: ${{ inputs.apt_distribution }}
           APT_COMPONENT: ${{ inputs.apt_component }}
           APT_INDEX_TIMEOUT_SECONDS: ${{ inputs.apt_index_timeout_seconds }}

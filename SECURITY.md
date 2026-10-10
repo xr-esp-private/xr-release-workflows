@@ -22,6 +22,11 @@ jobs do not receive APT credentials or a repository-write `GITHUB_TOKEN`.
 - Shared APT credentials may be Organization Secrets selected only for public
   release repositories that publish packages.
 - Non-sensitive APT routing data should be selected Organization Variables.
+  A caller may instead explicitly map optional `XR_APT_REPO_URL` from an
+  Organization Secret; it must still contain only a public base URL with no
+  embedded credentials. That Secret overrides the compatible URL input and
+  is resolved directly inside the prepare/publish jobs, not exported through
+  job outputs. Organization access policy must include the public caller.
 - The reusable workflow repository has none of these credentials.
 
 Fine-grained, expiring personal access tokens remain the compatible alternative
